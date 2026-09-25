@@ -18,8 +18,8 @@ A Rails app that helps Cru staff run the seating side of fundraising events (ban
 | Sign-in | Cru SSO (Okta / The Key) via OpenID Connect. |
 | Seating UX | Table board with drag-and-drop. Tables shown as cards, guests dragged between them. No room geometry in v1. |
 | Stack | Rails 8, Hotwire (Turbo, Stimulus, Turbo Streams), Tailwind, Postgres, Solid Queue/Cache/Cable. |
-| Infrastructure | Terrabloks defaults. Document whatever it produces. |
-| Project tracking | Flightdeck. Epics and stories below are written to load straight into it. |
+| Infrastructure | Terrabloks `aws-ecs` template, stage environment, Neon Postgres, no Redis, shared Okta "Minor Rails App" integration. See section 11. |
+| Project tracking | Flightdeck was skipped by request. Milestones below live in this doc for now. |
 
 ## 3. Personas and jobs
 
@@ -126,6 +126,40 @@ The intended process, pending the AGENTS.md file which was not reachable from th
 
 ## 10. Blockers noted during planning
 
-- The Terrabloks and Flightdeck connectors exist in the org but are not connected to this session.
-- The referenced `~/htdocs/flightdeck/AGENTS.md` is not in this cloud container and no flightdeck repo is attached.
+- The referenced `~/htdocs/flightdeck/AGENTS.md` is not in this cloud container and no flightdeck repo is attached. SDLC section 8 still needs reconciling with it.
 - A `/frontend-design` skill was requested but is not installed; the UX plan above was done directly.
+- Flightdeck tracking was skipped at the owner's request.
+
+## 11. Infrastructure (Terrabloks, 2026-09-25)
+
+Infra PR: https://github.com/CruGlobal/cru-terraform/pull/12341 (auto-plan, auto-apply, auto-merge on success).
+
+What it creates:
+
+- **GitHub repo** `CruGlobal/table-management`, private, from the `ecs` app template. Squash-only merges with auto-merge. Required checks: `lint-and-build` and `Validate PR Title`. The Rails app is developed in that repo; this planning repo stays as the design record.
+- **ECS Fargate service** `app` behind the shared stage ALB at `https://table-management-stage.cru.org`. Memory 768 MB (512 reserved). Stage stops daily at 5:00 PM Eastern.
+- **Neon Postgres 17** project `table-management-stage`, autoscaling 0.25 to 1 CU, suspends after 5 minutes idle. Database `table_management_stage`, app user `table_management_admin`.
+- **ECR repository** with lifecycle rules for production and staging images.
+- **KMS key** `alias/application/table-management`.
+- **Datadog Software Catalog** entry owned by dps-server-application-engineering.
+- **Okta**: shared Minor Rails Apps OIDC client. Redirect URI `https://table-management-stage.cru.org/auth/oktaoauth/callback`.
+
+Environment variables the app receives from Terraform:
+
+```
+DB_ENV_POSTGRESQL_DB, DB_ENV_POSTGRESQL_USER, DB_ENV_POSTGRESQL_PASS, DB_PORT_5432_TCP_ADDR
+OKTA_CLIENT_ID, OKTA_CLIENT_SECRET, OKTA_ISSUER, OKTA_AUTH_SERVER_ID, OKTA_REDIRECT_URI
+```
+
+Follow-ups in `cru-terraform` once the app exists:
+
+- Enable `database_migrations` in `applications/table-management/stage/application.tf` with `["bundle", "exec", "rake", "db:migrate"]` and path `db/migrate`.
+- Add a `slack_channel` for deploy notifications if wanted.
+- Add the `prod` environment when the first event is scheduled.
+- Developer access list currently contains only rob.menko@cru.org.
+
+Rails implications:
+
+- No Redis, so Solid Queue, Solid Cache, and Solid Cable run on Postgres. Configure them as separate databases or schemas in `database.yml` using the variables above.
+- OmniAuth strategy must mount at `/auth/oktaoauth` to match the redirect URI.
+- CI job names in the repo must be exactly `lint-and-build` and `Validate PR Title` or merges are blocked.
